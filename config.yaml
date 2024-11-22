@@ -1,0 +1,46 @@
+# config.yaml
+llm_model: "codellama"  # or other local LLM model
+main_branch: "main"     # or "master" depending on your repo
+
+# Files to ignore
+ignore_files:
+  - ".lock"
+  - "package-lock.json"
+  - "yarn.lock"
+  - ".gitignore"
+  - "*.md"
+  - "*.log"
+  - "node_modules/**"
+  - "venv/**"
+
+# Analysis settings
+analysis:
+  max_diff_size: 100000  # maximum diff size to analyze
+  min_changes: 1         # minimum number of changes to trigger analysis
+
+# Review focus areas (weights out of 1.0)
+review_weights:
+  security: 0.3
+  performance: 0.25
+  code_quality: 0.25
+  architecture: 0.2
+
+# Language-specific settings
+languages:
+  python:
+    check_typing: true
+    pep8_compliance: true
+    
+  javascript:
+    check_eslint: true
+    modern_features: true
+    
+  typescript:
+    strict_mode: true
+    interface_check: true
+
+# Output settings
+output:
+  format: "markdown"  # or "yaml"
+  include_stats: true
+  include_suggestions: true
