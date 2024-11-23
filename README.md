@@ -32,6 +32,27 @@ Run from your git repository:
 deepreview
 ```
 
+### Command Line Parameters
+
+DeepReview supports several command line parameters to customize its behavior:
+
+| Parameter | Description | Example |
+|-----------|-------------|---------|
+| `--qa` | Enables interactive Q&A mode with the LLM about the analysis results | `deepreview --qa` |
+| `--output` | Uses an existing analysis file for Q&A instead of generating a new one | `deepreview --qa --output ./analysis_results/review_2024_11_23.md` |
+
+#### Examples:
+
+Generate a new analysis and start Q&A session:
+```bash
+deepreview --qa
+```
+
+Use existing analysis file for Q&A:
+```bash
+deepreview --qa --output ./analysis_results/previous_review.md
+```
+
 ## ⚙️ Configuration Guide
 
 Create a `config.yaml` file in:
