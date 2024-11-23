@@ -352,28 +352,120 @@ class BranchDiffAnalyzer:
             context_parts.append("-" * 40 + "\n")
         
         return "\n".join(context_parts)
+    
+    def _parse_markdown_to_dict(self, markdown_content: str) -> Dict:
+        """
+        Parse markdown content back into a dictionary format similar to analysis results.
+        
+        Args:
+            markdown_content (str): The markdown content to parse
+            
+        Returns:
+            Dict: Parsed content in the same format as analysis results
+        """
+        results = {}
+        current_file = None
+        current_section = None
+        
+        # Split content into lines
+        lines = markdown_content.split('\n')
+        
+        for line in lines:
+            # File header (## filename)
+            if line.startswith('## '):
+                current_file = line[3:].strip()
+                results[current_file] = {
+                    'status': '',
+                    'stats': {'additions': 0, 'deletions': 0, 'total_changes': 0},
+                    'review': ''
+                }
+                continue
+                
+            if not current_file:
+                continue
+                
+            # Status line
+            if line.startswith('**Status**:'):
+                results[current_file]['status'] = line.split(':')[1].strip()
+                continue
+                
+            # Stats section
+            if 'Change Statistics' in line:
+                current_section = 'stats'
+                continue
+                
+            # Review section
+            if 'Review Analysis' in line:
+                current_section = 'review'
+                continue
+                
+            # Parse stats
+            if current_section == 'stats':
+                if line.startswith('Additions:'):
+                    results[current_file]['stats']['additions'] = int(line.split(':')[1].strip())
+                elif line.startswith('Deletions:'):
+                    results[current_file]['stats']['deletions'] = int(line.split(':')[1].strip())
+                elif line.startswith('Total Changes:'):
+                    results[current_file]['stats']['total_changes'] = int(line.split(':')[1].strip())
+                    
+            # Collect review content
+            if current_section == 'review' and line and not line.startswith('###'):
+                results[current_file]['review'] = results[current_file]['review'] + line + '\n'
+        
+        return results
+
+    def load_analysis_file(self, file_path: str) -> Dict:
+        """
+        Load and parse analysis results from a file.
+        
+        Args:
+            file_path (str): Path to the analysis file (yaml or markdown)
+            
+        Returns:
+            Dict: Analysis results in standardized format
+        """
+        try:
+            with open(file_path, 'r') as f:
+                if file_path.endswith('.yaml'):
+                    return yaml.safe_load(f)
+                elif file_path.endswith('.md') or file_path.endswith('.markdown'):
+                    content = f.read()
+                    return self._parse_markdown_to_dict(content)
+                else:
+                    raise ValueError("Unsupported file format. Use 'markdown' or 'yaml'.")
+        except Exception as e:
+            self.logger.error(f"Error loading analysis file: {e}")
+            raise
 
 def main():
     parser = argparse.ArgumentParser(description="Branch Diff Analyzer")
     parser.add_argument('--qa', action='store_true', help="Include QA chain in the analysis")
+    parser.add_argument('--output', type=str, help="Specify the output file path for the analysis results")
     args = parser.parse_args()
 
     analyzer = BranchDiffAnalyzer()
     
-    # Get current branch name
-    current_branch = analyzer.repo.active_branch.name
-    
-    # Run analysis
-    print(f"Analyzing changes in branch '{current_branch}'...")
-    results = analyzer.analyze_changes()
-    
-    if not results:
-        print("No changes found to analyze")
-        return
-    
-    # Save results
-    output_file = analyzer.save_analysis(results)
-    print(f"\nAnalysis completed and saved to {output_file}")
+    # Initialize results
+    if args.output:
+        # Load results from file
+        try:
+            results = analyzer.load_analysis_file(args.output)
+        except Exception as e:
+            print(f"Error loading analysis file: {e}")
+            return
+    else:
+        # Run live analysis
+        current_branch = analyzer.repo.active_branch.name
+        print(f"Analyzing changes in branch '{current_branch}'...")
+        results = analyzer.analyze_changes()
+        
+        if not results:
+            print("No changes found to analyze")
+            return
+        
+        # Save results
+        output_file = analyzer.save_analysis(results)
+        print(f"\nAnalysis completed and saved to {output_file}")
 
     # Start QA session if requested
     if args.qa:
