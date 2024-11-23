@@ -9,6 +9,7 @@ from langchain.llms import Ollama
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 import git
+import argparse
 
 class BranchDiffAnalyzer:
     def __init__(self, config_path: str = "config.yaml"):
@@ -258,8 +259,105 @@ class BranchDiffAnalyzer:
             lines.append("\n---\n")
 
         return "\n".join(lines)
+    
+    def setup_qa_llm(self):
+        """Setup a separate LLM for QA interactions"""
+        qa_model = self.config.get("qa_model", "gpt4all")
+        return Ollama(model=qa_model)
+
+    def interactive_qa(self, analysis_results: Dict):
+        """
+        Start an interactive QA session about the code changes.
+        Continues until user types 'exit' or sends keyboard interrupt.
+        
+        Args:
+            analysis_results (Dict): The analysis results to reference during QA
+        """
+        qa_llm = self.setup_qa_llm()
+        
+        # Create a context summary for the QA session
+        context = self._create_qa_context(analysis_results)
+        
+        qa_template = """
+        You are a helpful AI assistant specialized in code review discussions.
+        You have access to the following code change analysis:
+        
+        {context}
+        
+        Based on this context, please answer the following question:
+        {question}
+        
+        Provide clear, concise answers and be ready to go into technical details when needed.
+        If you're unsure about something, say so rather than making assumptions.
+        """
+        
+        prompt = PromptTemplate(
+            input_variables=["context", "question"],
+            template=qa_template
+        )
+        
+        chain = LLMChain(llm=qa_llm, prompt=prompt)
+        
+        print("\nStarting QA session about code changes.")
+        print("Type 'exit' to end the session.")
+        print("-" * 50)
+        
+        try:
+            while True:
+                question = input("\nYour question: ").strip()
+                
+                if question.lower() == 'exit':
+                    print("\nEnding QA session.")
+                    break
+                    
+                if not question:
+                    continue
+                    
+                try:
+                    response = chain.run(
+                        context=context,
+                        question=question
+                    )
+                    print("\nAnswer:", response)
+                    
+                except Exception as e:
+                    self.logger.error(f"Error in QA response: {e}")
+                    print("\nSorry, I encountered an error processing your question. Please try again.")
+                    
+        except KeyboardInterrupt:
+            print("\n\nQA session terminated by user.")
+            return
+
+    def _create_qa_context(self, analysis_results: Dict) -> str:
+        """
+        Create a condensed context from analysis results for the QA chain.
+        
+        Args:
+            analysis_results (Dict): The analysis results to summarize
+            
+        Returns:
+            str: A condensed context string
+        """
+        context_parts = []
+        
+        for file_path, result in analysis_results.items():
+            context_parts.append(f"File: {file_path}")
+            context_parts.append(f"Status: {result['status']}")
+            context_parts.append("Changes:")
+            context_parts.append(f"- Additions: {result['stats']['additions']}")
+            context_parts.append(f"- Deletions: {result['stats']['deletions']}")
+            context_parts.append(f"- Total Changes: {result['stats']['total_changes']}")
+            context_parts.append("\nAnalysis Summary:")
+            context_parts.append(result['review'])
+            context_parts.append("-" * 40 + "\n")
+        
+        return "\n".join(context_parts)
 
 def main():
+    parser = argparse.ArgumentParser(description="Branch Diff Analyzer")
+    parser.add_argument('--qa', action='store_true', help="Include QA chain in the analysis")
+    args = parser.parse_args()
+
     analyzer = BranchDiffAnalyzer()
     
     # Get current branch name
@@ -276,6 +374,10 @@ def main():
     # Save results
     output_file = analyzer.save_analysis(results)
     print(f"\nAnalysis completed and saved to {output_file}")
+
+    # Start QA session if requested
+    if args.qa:
+        analyzer.interactive_qa(results)
 
 if __name__ == "__main__":
     main()
