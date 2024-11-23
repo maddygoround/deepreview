@@ -10,10 +10,15 @@ from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 import git
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+from langchain.globals import set_llm_cache, get_llm_cache
+from langchain.cache import InMemoryCache
 
 class BranchDiffAnalyzer:
     def __init__(self, config_path: str = "config.yaml"):
-         # Look for config in current directory first, then home directory
+        set_llm_cache(InMemoryCache())
+        # Look for config in current directory first, then home directory
         local_config = os.path.join(os.getcwd(), config_path)
         home_config = os.path.join(os.path.expanduser("~"), ".deepreview", config_path)
         
@@ -29,7 +34,12 @@ class BranchDiffAnalyzer:
         except git.exc.InvalidGitRepositoryError:
             raise Exception("Not a git repository. Please run this command from within a git repository.")
         
-        self.llm = Ollama(model=self.config.get("llm_model", "codellama"))
+        # Initialize thread-local storage for LLM instances
+        self.thread_local = threading.local()
+        
+        # Get max workers from config or default to CPU count
+        self.max_workers = self.config.get("max_workers", os.cpu_count() or 4)
+        
         self.setup_logging()
 
     def setup_logging(self):
@@ -122,15 +132,16 @@ class BranchDiffAnalyzer:
             'total_changes': additions + deletions
         }
 
-    def analyze_changes(self, branch_name: Optional[str] = None) -> Dict:
-        """Analyze changes between branches using LLM"""
-        changes = self.get_branch_diff(branch_name)
-        
-        if not changes:
-            self.logger.info("No changes found to analyze")
-            return {}
+    def get_llm(self):
+        """Get or create thread-local LLM instance"""
+        if not hasattr(self.thread_local, "llm"):
+            self.thread_local.llm = Ollama(model=self.config.get("llm_model", "codellama"))
+        return self.thread_local.llm
 
-        analysis_results = {}
+    def analyze_file(self, file_path: str, change_info: Dict) -> Dict:
+        """Analyze a single file's changes using LLM"""
+        self.logger.info(f"Analyzing changes in {file_path}")
+        
         review_template = """
         Analyze the following code changes between branches and provide detailed feedback on:
         1. Impact Analysis:
@@ -168,25 +179,53 @@ class BranchDiffAnalyzer:
             template=review_template
         )
         
-        chain = LLMChain(llm=self.llm, prompt=prompt)
-
-        for file_path, change_info in changes.items():
-            self.logger.info(f"Analyzing changes in {file_path}")
+        try:
+            # Get thread-local LLM instance
+            llm = self.get_llm()
+            chain = LLMChain(llm=llm, prompt=prompt)
             
-            try:
-                review = chain.run(
-                    file_path=file_path,
-                    diff_content=change_info['content']
-                )
-                
-                analysis_results[file_path] = {
-                    'review': review,
-                    'stats': change_info['stats'],
-                    'status': change_info['status']
-                }
-            except Exception as e:
-                self.logger.error(f"Error analyzing {file_path}: {e}")
-                continue
+            review = chain.run(
+                file_path=file_path,
+                diff_content=change_info['content']
+            )
+            
+            return {
+                'review': review,
+                'stats': change_info['stats'],
+                'status': change_info['status']
+            }
+        except Exception as e:
+            self.logger.error(f"Error analyzing {file_path}: {e}")
+            return None
+
+    def analyze_changes(self, branch_name: Optional[str] = None) -> Dict:
+        """Analyze changes between branches using LLM with parallel processing"""
+        changes = self.get_branch_diff(branch_name)
+        
+        if not changes:
+            self.logger.info("No changes found to analyze")
+            return {}
+
+        analysis_results = {}
+        
+        # Create a thread pool for parallel processing
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Submit all file analysis tasks
+            future_to_file = {
+                executor.submit(self.analyze_file, file_path, change_info): file_path
+                for file_path, change_info in changes.items()
+            }
+            
+            # Process completed analyses as they finish
+            for future in as_completed(future_to_file):
+                file_path = future_to_file[future]
+                try:
+                    result = future.result()
+                    if result:
+                        analysis_results[file_path] = result
+                except Exception as e:
+                    self.logger.error(f"Error processing {file_path}: {e}")
+                    continue
 
         return analysis_results
 
@@ -441,33 +480,34 @@ def main():
     parser = argparse.ArgumentParser(description="Branch Diff Analyzer")
     parser.add_argument('--qa', action='store_true', help="Include QA chain in the analysis")
     parser.add_argument('--output', type=str, help="Specify the output file path for the analysis results")
+    parser.add_argument('--workers', type=int, help="Number of worker threads for parallel processing")
     args = parser.parse_args()
 
     analyzer = BranchDiffAnalyzer()
     
+    # Override max_workers if specified in command line
+    if args.workers:
+        analyzer.max_workers = args.workers
+
     # Initialize results
     if args.output:
-        # Load results from file
         try:
             results = analyzer.load_analysis_file(args.output)
         except Exception as e:
             print(f"Error loading analysis file: {e}")
             return
     else:
-        # Run live analysis
         current_branch = analyzer.repo.active_branch.name
-        print(f"Analyzing changes in branch '{current_branch}'...")
+        print(f"Analyzing changes in branch '{current_branch}' using {analyzer.max_workers} workers...")
         results = analyzer.analyze_changes()
         
         if not results:
             print("No changes found to analyze")
             return
         
-        # Save results
         output_file = analyzer.save_analysis(results)
         print(f"\nAnalysis completed and saved to {output_file}")
 
-    # Start QA session if requested
     if args.qa:
         analyzer.interactive_qa(results)
 
